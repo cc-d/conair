@@ -2,28 +2,47 @@
 import subprocess
 import time
 import random
+import signal
 import sys
 
-# === CONFIG ===
 SECRET = "GROK4LIFE"           # CHANGE THIS
-SYMBOLS = [100, 200, 300, 400] # ms → 2 bits each
-JITTER = 20                    # ±ms
-INTERFACE = "wlan0"
+SYMBOLS = [150, 250, 350, 450] # ms → CLEAR GAPS
+JITTER = 15                    # ±15ms max
+INTERFACE = "wlp6s0"
 
-# === ENCODE SECRET ===
-def bits():
+def set_beacon_interval(ms):
+    cmd = ["sudo", "iw", "dev", INTERFACE, "set", "beacon_int", str(ms)]
+    subprocess.run(cmd, check=False)
+
+def send_symbol(bits):
+    interval = SYMBOLS[bits] + random.randint(-JITTER, JITTER)
+    set_beacon_interval(interval)
+    time.sleep(interval / 1000.0 + 0.01)  # +10ms buffer
+
+def encode_secret():
+    data = ""
     for c in SECRET:
         b = ord(c)
-        for i in range(3, -1, -1):  # 8 bits → 4 symbols
-            yield (b >> (i * 2)) & 0b11
+        for i in range(3, -1, -1):
+            symbol = (b >> (i * 2)) & 0b11
+            send_symbol(symbol)
+            data += f"{symbol:02b}"
+        print(f"Sent: '{c}' → {data[-8:]}")
+    print(f"[+] Full: {SECRET}")
 
-# === MAIN LOOP ===
-if __name__ == "__main__":
-    print(f"[AP] Encoding: {SECRET}")
-    for symbol in bits():
-        interval = SYMBOLS[symbol] + random.randint(-JITTER, JITTER)
-        cmd = ["sudo", "iw", "dev", INTERFACE, "set", "beacon_int", str(interval)]
-        subprocess.run(cmd, check=False)
-        time.sleep(interval / 1000.0)  # wait for next beacon
-    print("[AP] Done. Restarting in 5s...")
-    time.sleep(5)
+# Graceful exit
+def signal_handler(sig, frame):
+    print("\n[+] Stopping AP...")
+    set_beacon_interval(100)
+    sys.exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
+
+print(f"[AP] Broadcasting on {INTERFACE} | Secret: {SECRET}")
+set_beacon_interval(100)  # Reset
+time.sleep(1)
+
+while True:
+    encode_secret()
+    print("[*] Repeating in 3s...")
+    time.sleep(3)
