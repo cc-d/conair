@@ -6,9 +6,10 @@ import signal
 import sys
 
 SECRET = "GROK4LIFE"           # CHANGE THIS
-SYMBOLS = [150, 250, 350, 450] # ms → CLEAR GAPS
-JITTER = 15                    # ±15ms max
+SYMBOLS = [100, 200, 300, 400] # Bigger gaps, no overlap
+JITTER = 10                    # Tighter jitter (±10ms)
 INTERFACE = "wlp6s0"
+SYNC_SYMBOL = 500              # Long gap for message sync
 
 def set_beacon_interval(ms):
     cmd = ["sudo", "iw", "dev", INTERFACE, "set", "beacon_int", str(ms)]
@@ -17,32 +18,44 @@ def set_beacon_interval(ms):
 def send_symbol(bits):
     interval = SYMBOLS[bits] + random.randint(-JITTER, JITTER)
     set_beacon_interval(interval)
-    time.sleep(interval / 1000.0 + 0.01)  # +10ms buffer
+    time.sleep(interval / 1000.0 + 0.02)  # +20ms buffer
+
+def encode_char(c):
+    b = ord(c)
+    symbols = []
+    for i in range(3, -1, -1):
+        symbol = (b >> (i * 2)) & 0b11
+        symbols.append(symbol)
+    return symbols  # 4 symbols per char
 
 def encode_secret():
-    data = ""
+    print(f"[AP] Encoding: {SECRET}")
     for c in SECRET:
-        b = ord(c)
-        for i in range(3, -1, -1):
-            symbol = (b >> (i * 2)) & 0b11
+        # Send sync symbol first (11 = 400ms, but longer for char start)
+        set_beacon_interval(SYNC_SYMBOL)
+        time.sleep(SYNC_SYMBOL / 1000.0)
+        
+        symbols = encode_char(c)
+        for symbol in symbols:
             send_symbol(symbol)
-            data += f"{symbol:02b}"
-        print(f"Sent: '{c}' → {data[-8:]}")
-    print(f"[+] Full: {SECRET}")
+            print(f"Sent '{c}' symbol {symbol:02b} → {SYMBOLS[symbol]}ms")
+    
+    # End message sync
+    set_beacon_interval(100)
+    print("[+] Message complete")
 
-# Graceful exit
 def signal_handler(sig, frame):
-    print("\n[+] Stopping AP...")
+    print("\n[+] Stopping...")
     set_beacon_interval(100)
     sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
 
-print(f"[AP] Broadcasting on {INTERFACE} | Secret: {SECRET}")
-set_beacon_interval(100)  # Reset
-time.sleep(1)
+print(f"[AP] Starting on {INTERFACE}")
+set_beacon_interval(100)
+time.sleep(2)
 
 while True:
     encode_secret()
-    print("[*] Repeating in 3s...")
-    time.sleep(3)
+    print("[*] Repeating in 5s...")
+    time.sleep(5)

@@ -3,50 +3,64 @@ from scapy.all import *
 import time
 import statistics
 
-# CONFIG
-TARGET_BSSID = "58:02:05:28:3E:A7".lower() #"F4:52:46:A2:54:EC"   # ← CHANGE TO YOUR AP's BSSID
-INTERFACE = "wlp2s0"
-SYMBOLS = [150, 250, 350, 450]
-TOLERANCE = 60                       # ±60ms = huge margin
-MIN_GAP = 80                         # Ignore noise <80ms
-WINDOW_SIZE = 5                      # Smooth over 5 intervals
+TARGET_BSSID = "F4:52:46:A2:54:EC"  # Your AP BSSID
+INTERFACE = "wlp2s0mon"             # Monitor interface
+SYMBOLS = [100, 200, 300, 400]
+SYNC_SYMBOL = 500
+TOLERANCE = 40                      # ±40ms (tight but safe)
+MIN_GAP = 50                        # Ignore tiny gaps
+CHAR_BUFFER = []                    # Collects 4 symbols per char
+MESSAGE_BUFFER = ""                 # Full decoded message
 
 last_time = None
-intervals = []
-buffer = []
-decoded = ""
+char_count = 0
 
-def classify_interval(avg_interval):
-    diffs = [abs(avg_interval - s) for s in SYMBOLS]
-    return diffs.index(min(diffs))
+def decode_symbol(gap):
+    # Direct classification — NO averaging!
+    diffs = [abs(gap - s) for s in SYMBOLS]
+    min_diff = min(diffs)
+    if min_diff <= TOLERANCE:
+        return diffs.index(min_diff)
+    elif abs(gap - SYNC_SYMBOL) <= 80:  # Sync gap
+        return -1  # Sync marker
+    return None  # Invalid
 
 def packet_handler(pkt):
-    global last_time, intervals, buffer, decoded
-
+    global last_time, CHAR_BUFFER, MESSAGE_BUFFER, char_count
+    
     if pkt.haslayer(Dot11Beacon) and pkt[Dot11].addr3 == TARGET_BSSID:
         now = time.time()
         if last_time:
-            gap = (now - last_time) * 1000
-            if gap > MIN_GAP:
-                intervals.append(gap)
-                print(f"Raw: {gap:.1f}ms", end="")
-
-                # Smooth with moving average
-                if len(intervals) > WINDOW_SIZE:
-                    intervals.pop(0)
-                avg = statistics.mean(intervals)
-                print(f" → Avg: {avg:.1f}ms", end="")
-
-                sym = classify_interval(avg)
-                print(f" → [{sym:02b}]")
-
-                buffer.append(sym)
-                if len(buffer) == 4:
-                    byte = (buffer[0]<<6) | (buffer[1]<<4) | (buffer[2]<<2) | buffer[3]
-                    char = chr(byte)
-                    decoded += char
-                    print(f"\n[*] DECODED: {decoded}\n")
-                    buffer = []
+            gap = int((now - last_time) * 1000)
+            if gap >= MIN_GAP:
+                sym = decode_symbol(gap)
+                if sym is not None:
+                    if sym == -1:
+                        # Sync: start new char
+                        if len(CHAR_BUFFER) == 4:
+                            # Process previous char
+                            byte = sum(s << (6 - i*2) for i, s in enumerate(CHAR_BUFFER))
+                            char = chr(byte)
+                            MESSAGE_BUFFER += char
+                            print(f"\n[*] Char {char_count}: '{char}' | Full: {MESSAGE_BUFFER}")
+                            char_count += 1
+                        CHAR_BUFFER = []
+                        print(f"[SYNC] New char starting...")
+                    else:
+                        # Data symbol
+                        CHAR_BUFFER.append(sym)
+                        print(f"[+] Gap: {gap}ms → {sym:02b} | Buffer: {CHAR_BUFFER}")
+                        
+                        # Auto-process if 4 symbols (no need for sync end)
+                        if len(CHAR_BUFFER) == 4:
+                            byte = sum(s << (6 - i*2) for i, s in enumerate(CHAR_BUFFER))
+                            char = chr(byte)
+                            MESSAGE_BUFFER += char
+                            print(f"\n[*] Char {char_count}: '{char}' | Full: {MESSAGE_BUFFER}")
+                            char_count += 1
+                            CHAR_BUFFER = []
+                else:
+                    print(f"[?] Invalid gap: {gap}ms (ignored)")
         last_time = now
 
 print(f"[CLIENT] Sniffing {TARGET_BSSID} on {INTERFACE}...")
